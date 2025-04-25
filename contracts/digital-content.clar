@@ -49,10 +49,6 @@
 (define-constant ERR-ZERO-DURATION u9)
 (define-constant ERR-INVALID-CONTENT-ID u10)
 (define-constant ERR-INVALID-BENEFICIARY u11)
-(define-constant ERR-INVALID-TITLE u12)
-(define-constant ERR-INVALID-DESCRIPTION u13)
-(define-constant ERR-INVALID-CONTENT-HASH u14)
-(define-constant ERR-INVALID-LICENSE-TYPE u15)
 
 ;; Read-only functions
 
@@ -88,22 +84,12 @@
     (var-get content-counter)
 )
 
-;; Validation helpers
+;; Validation helpers - Fixed to use two separate comparisons
 (define-read-only (is-valid-content-id (content-id uint))
     (and 
         (>= content-id u1)
         (<= content-id (var-get content-counter))
     )
-)
-
-;; String validation helpers
-(define-read-only (is-valid-string (str (string-utf8 500)))
-    (> (len str) u0)
-)
-
-;; Buffer validation helpers
-(define-read-only (is-valid-hash (hash (buff 32)))
-    (is-some hash)
 )
 
 ;; Public functions
@@ -116,47 +102,39 @@
     (license-price uint)
     (license-duration-days uint))
     
-    (begin
+    (let 
+        ((content-id (+ (var-get content-counter) u1)))
+        
         ;; Validate inputs
-        (asserts! (is-valid-string title) (err ERR-INVALID-TITLE))
-        (asserts! (is-valid-string description) (err ERR-INVALID-DESCRIPTION))
-        (asserts! (is-valid-hash content-hash) (err ERR-INVALID-CONTENT-HASH))
         (asserts! (> license-price u0) (err ERR-ZERO-PRICE))
         (asserts! (> license-duration-days u0) (err ERR-ZERO-DURATION))
         
-        (let 
-            ((content-id (+ (var-get content-counter) u1))
-             (validated-title title)  ;; Using validated variables to satisfy compiler
-             (validated-description description)
-             (validated-hash content-hash))
-            
-            ;; Store content details with validated inputs
-            (map-set contents 
-                { content-id: content-id }
-                {
-                    owner: tx-sender,
-                    title: validated-title,
-                    description: validated-description,
-                    content-hash: validated-hash,
-                    creation-time: block-height,
-                    license-price: license-price,
-                    license-duration-days: license-duration-days,
-                    is-active: true
-                }
-            )
-            
-            ;; Set default royalty split (100% to creator)
-            (map-set royalty-splits
-                { content-id: content-id, beneficiary: tx-sender }
-                { percentage: u10000 }  ;; 100% in basis points
-            )
-            
-            ;; Increment counter
-            (var-set content-counter content-id)
-            
-            ;; Return the content ID
-            (ok content-id)
+        ;; Store content details with validated inputs
+        (map-set contents 
+            { content-id: content-id }
+            {
+                owner: tx-sender,
+                title: title,
+                description: description,
+                content-hash: content-hash,
+                creation-time: block-height,
+                license-price: license-price,
+                license-duration-days: license-duration-days,
+                is-active: true
+            }
         )
+        
+        ;; Set default royalty split (100% to creator)
+        (map-set royalty-splits
+            { content-id: content-id, beneficiary: tx-sender }
+            { percentage: u10000 }  ;; 100% in basis points
+        )
+        
+        ;; Increment counter
+        (var-set content-counter content-id)
+        
+        ;; Return the content ID
+        (ok content-id)
     )
 )
 
@@ -192,9 +170,8 @@
 ;; Purchase a license for content
 (define-public (purchase-license (content-id uint) (license-type (string-utf8 20)))
     (begin
-        ;; Validate inputs
+        ;; Validate content-id
         (asserts! (is-valid-content-id content-id) (err ERR-INVALID-CONTENT-ID))
-        (asserts! (is-valid-string license-type) (err ERR-INVALID-LICENSE-TYPE))
         
         (let 
             ((content (unwrap! (map-get? contents { content-id: content-id }) (err ERR-DOES-NOT-EXIST)))
@@ -202,8 +179,7 @@
              (duration-days (get license-duration-days content))
              (owner (get owner content))
              (is-active (get is-active content))
-             (expiration-height (+ block-height (* duration-days u144)))  ;; ~144 blocks per day
-             (validated-license-type license-type))  ;; Using validated variable to satisfy compiler
+             (expiration-height (+ block-height (* duration-days u144))))  ;; ~144 blocks per day
             
             ;; Check that content is active
             (asserts! is-active (err ERR-INACTIVE))
@@ -213,7 +189,7 @@
                 { content-id: content-id, licensee: tx-sender }
                 {
                     expiration: expiration-height,
-                    license-type: validated-license-type,
+                    license-type: license-type,
                     payment-amount: price
                 }
             )
@@ -258,17 +234,15 @@
     (is-active bool))
     
     (begin
-        ;; Validate inputs
+        ;; Validate content-id
         (asserts! (is-valid-content-id content-id) (err ERR-INVALID-CONTENT-ID))
-        (asserts! (is-valid-string title) (err ERR-INVALID-TITLE))
-        (asserts! (is-valid-string description) (err ERR-INVALID-DESCRIPTION))
+        
+        ;; Validate other inputs
         (asserts! (> license-price u0) (err ERR-ZERO-PRICE))
         (asserts! (> license-duration-days u0) (err ERR-ZERO-DURATION))
         
         (let 
-            ((content (unwrap! (map-get? contents { content-id: content-id }) (err ERR-DOES-NOT-EXIST)))
-             (validated-title title)  ;; Using validated variables to satisfy compiler
-             (validated-description description))
+            ((content (unwrap! (map-get? contents { content-id: content-id }) (err ERR-DOES-NOT-EXIST))))
             
             ;; Check authorization (only owner can update)
             (asserts! (is-eq tx-sender (get owner content)) (err ERR-NOT-AUTHORIZED))
@@ -278,8 +252,8 @@
                 { content-id: content-id }
                 (merge content 
                     {
-                        title: validated-title,
-                        description: validated-description,
+                        title: title,
+                        description: description,
                         license-price: license-price,
                         license-duration-days: license-duration-days,
                         is-active: is-active
